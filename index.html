@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Free PDF &amp; Image OCR to Excel</title>
+<meta name="description" content="Turn unreadable scanned PDFs and photos into editable Excel, CSV or text. Free, private, works in your browser.">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1b1f24;--muted:#5b6570;--accent:#1a7f4b;--accent-text:#fff;--border:#dde1e6}
+@media (prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1e2226;--text:#e8eaed;--muted:#9aa4ae;--accent:#3ab576;--accent-text:#0b1a12;--border:#32383e}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+.wrap{max-width:640px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:1.6rem;margin:8px 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px}
+label{display:block;font-weight:600;margin-bottom:6px}
+select,input[type=file]{width:100%;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:1rem}
+button{width:100%;padding:14px;border:0;border-radius:10px;background:var(--accent);color:var(--accent-text);font-size:1.05rem;font-weight:700;cursor:pointer}
+button:disabled{opacity:.5}
+button.secondary{background:transparent;color:var(--text);border:1px solid var(--border);margin-top:8px}
+.bar{height:10px;background:var(--border);border-radius:6px;overflow:hidden;margin:10px 0 6px}
+.bar>div{height:100%;width:0;background:var(--accent);transition:width .2s}
+.status{color:var(--muted);font-size:.92rem;min-height:1.4em}
+.hidden{display:none}
+textarea{width:100%;min-height:180px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-family:ui-monospace,Menlo,monospace;font-size:.85rem}
+.tablewrap{overflow-x:auto;max-height:300px;border:1px solid var(--border);border-radius:10px}
+table{border-collapse:collapse;font-size:.85rem;width:100%}
+td{border:1px solid var(--border);padding:4px 8px;white-space:nowrap}
+.note{font-size:.85rem;color:var(--muted)}
+footer{text-align:center;color:var(--muted);font-size:.8rem;margin-top:24px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>PDF &amp; Photo OCR to Excel</h1>
+  <p class="sub">Turn unreadable scans into editable Excel, CSV or text. Free. Your files never leave your phone.</p>
+
+  <div class="card">
+    <label for="files">1. Choose PDF or pictures</label>
+    <input id="files" type="file" accept="application/pdf,image/*" multiple>
+  </div>
+
+  <div class="card">
+    <label for="lang">2. Language of the document</label>
+    <select id="lang">
+      <option value="eng">English</option>
+      <option value="eng+hin">English + Hindi</option>
+      <option value="hin">Hindi</option>
+      <option value="ben">Bengali</option>
+      <option value="urd">Urdu</option>
+      <option value="ara">Arabic</option>
+      <option value="spa">Spanish</option>
+      <option value="fra">French</option>
+      <option value="deu">German</option>
+      <option value="por">Portuguese</option>
+      <option value="rus">Russian</option>
+      <option value="ind">Indonesian</option>
+      <option value="tur">Turkish</option>
+      <option value="chi_sim">Chinese (Simplified)</option>
+      <option value="jpn">Japanese</option>
+      <option value="kor">Korean</option>
+    </select>
+    <p class="note">The first run downloads the language data (a few MB), so use Wi-Fi if you can.</p>
+  </div>
+
+  <button id="go">3. Convert</button>
+
+  <div id="progress" class="card hidden" style="margin-top:14px">
+    <div class="status" id="status">Starting…</div>
+    <div class="bar"><div id="fill"></div></div>
+  </div>
+
+  <div id="result" class="card hidden" style="margin-top:14px">
+    <label>Preview (first page)</label>
+    <div class="tablewrap"><table id="preview"></table></div>
+    <div style="height:12px"></div>
+    <button id="dlx">Download Excel (.xlsx)</button>
+    <button id="dlc" class="secondary">Download CSV</button>
+    <button id="dlt" class="secondary">Download plain text</button>
+    <div style="height:12px"></div>
+    <label for="txt">Text</label>
+    <textarea id="txt" readonly></textarea>
+  </div>
+
+  <footer>Runs fully in your browser using open-source Tesseract OCR.<br>Best results: sharp, well-lit, straight scans.</footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+(function () {
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var pages = [];      // [{name, table}]
+  var allText = "";
+  var MAX_SIDE = 2600; // keep memory use safe on phones
+
+  function setStatus(msg, pct) {
+    $("status").textContent = msg;
+    if (pct != null) $("fill").style.width = Math.round(pct * 100) + "%";
+  }
+
+  function fitCanvas(src, w, h) {
+    var s = Math.min(1, MAX_SIDE / Math.max(w, h));
+    var c = document.createElement("canvas");
+    c.width = Math.round(w * s); c.height = Math.round(h * s);
+    var ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(src, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  // Yields one canvas per PDF page / image
+  async function loadCanvases(file, onCanvas) {
+    var base = file.name.replace(/\.[^.]+$/, "");
+    if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+      var pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      for (var i = 1; i <= pdf.numPages; i++) {
+        var page = await pdf.getPage(i);
+        var vp1 = page.getViewport({ scale: 1 });
+        var scale = Math.min(3, MAX_SIDE / Math.max(vp1.width, vp1.height));
+        var vp = page.getViewport({ scale: scale });
+        var c = document.createElement("canvas");
+        c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+        var ctx = c.getContext("2d");
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        await onCanvas(c, base + " p" + i, i, pdf.numPages);
+      }
+    } else {
+      var bmp = await createImageBitmap(file);
+      var c2 = fitCanvas(bmp, bmp.width, bmp.height);
+      await onCanvas(c2, base, 1, 1);
+    }
+  }
+
+  // ---- words -> rows -> cells -> columns ----
+  function median(a) {
+    var s = a.slice().sort(function (x, y) { return x - y; });
+    return s.length ? s[Math.floor(s.length / 2)] : 0;
+  }
+
+  function buildTable(words, pageWidth) {
+    words = words.filter(function (w) { return w.text.trim() && w.confidence >= 20; });
+    if (!words.length) return [];
+    words.sort(function (a, b) { return (a.y0 + a.y1) - (b.y0 + b.y1); });
+    var rows = [];
+    words.forEach(function (w) {
+      var cy = (w.y0 + w.y1) / 2, h = w.y1 - w.y0, r = rows[rows.length - 1];
+      if (r && Math.abs(cy - r.cy) < 0.6 * r.h) {
+        r.words.push(w);
+        r.cy = (r.cy * (r.words.length - 1) + cy) / r.words.length;
+        r.h = Math.max(r.h, h);
+      } else rows.push({ words: [w], cy: cy, h: h });
+    });
+
+    var cellRows = rows.map(function (r) {
+      var ws = r.words.sort(function (a, b) { return a.x0 - b.x0; });
+      var limit = Math.max(20, 1.6 * median(ws.map(function (w) { return w.y1 - w.y0; })));
+      var cells = [], cur = [ws[0]], right = ws[0].x1;
+      for (var i = 1; i < ws.length; i++) {
+        if (ws[i].x0 - right > limit) { cells.push(cur); cur = [ws[i]]; }
+        else cur.push(ws[i]);
+        right = ws[i].x1;
+      }
+      cells.push(cur);
+      return cells.map(function (c) {
+        return { x: c[0].x0, text: c.map(function (w) { return w.text; }).join(" ") };
+      });
+    });
+
+    var starts = [];
+    cellRows.forEach(function (r) { r.forEach(function (c) { starts.push(c.x); }); });
+    starts.sort(function (a, b) { return a - b; });
+    var tol = Math.max(30, pageWidth * 0.02), groups = [];
+    starts.forEach(function (x) {
+      var g = groups[groups.length - 1];
+      if (g && x - g[g.length - 1] <= tol) g.push(x); else groups.push([x]);
+    });
+    var anchors = groups.map(function (g) { return g.reduce(function (a, b) { return a + b; }, 0) / g.length; });
+
+    return cellRows.map(function (r) {
+      var line = new Array(anchors.length).fill("");
+      r.forEach(function (c) {
+        var best = 0, bd = Infinity;
+        anchors.forEach(function (a, i) { var d = Math.abs(a - c.x); if (d < bd) { bd = d; best = i; } });
+        line[best] = (line[best] + " " + c.text).trim();
+      });
+      return line.map(toNumber);
+    });
+  }
+
+  function toNumber(t) {
+    if (typeof t !== "string") return t;
+    var s = t.replace(/[,\s]/g, "").replace(/^[$€£₹]/, "");
+    if (/^-?\d+(\.\d+)?$/.test(s) && !/^0\d/.test(s)) return parseFloat(s);
+    if (/^-?\d+(\.\d+)?%$/.test(s)) return parseFloat(s) / 100;
+    return t;
+  }
+
+  // ---- main run ----
+  $("go").addEventListener("click", async function () {
+    var files = $("files").files;
+    if (!files.length) { alert("Please choose a PDF or picture first."); return; }
+    $("go").disabled = true;
+    $("result").classList.add("hidden");
+    $("progress").classList.remove("hidden");
+    pages = []; allText = "";
+    var worker;
+    try {
+      setStatus("Loading OCR engine…", 0.02);
+      var current = "";
+      worker = await Tesseract.createWorker($("lang").value, 1, {
+        logger: function (m) {
+          if (m.status === "recognizing text") setStatus(current + " — reading text " + Math.round(m.progress * 100) + "%", null);
+          else if (m.status) setStatus("Preparing: " + m.status + "…", null);
+        }
+      });
+      for (var f = 0; f < files.length; f++) {
+        await loadCanvases(files[f], async function (canvas, name, idx, total) {
+          current = name;
+          setStatus(name + " — starting…", null);
+          var res = await worker.recognize(canvas);
+          var words = (res.data.words || []).map(function (w) {
+            return { text: w.text, confidence: w.confidence, x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 };
+          });
+          pages.push({ name: name, table: buildTable(words, canvas.width) });
+          allText += "=== " + name + " ===\n" + res.data.text.trim() + "\n\n";
+          setStatus(name + " done", (f + idx / total) / files.length);
+        });
+      }
+      setStatus("All done ✔", 1);
+      showResult();
+    } catch (e) {
+      console.error(e);
+      setStatus("Error: " + (e && e.message ? e.message : e) + ". Check your internet and try a smaller file.", null);
+    } finally {
+      if (worker) { try { await worker.terminate(); } catch (e) {} }
+      $("go").disabled = false;
+    }
+  });
+
+  function showResult() {
+    var t = $("preview"); t.innerHTML = "";
+    var first = pages[0] ? pages[0].table : [];
+    first.slice(0, 40).forEach(function (r) {
+      var tr = document.createElement("tr");
+      r.forEach(function (c) { var td = document.createElement("td"); td.textContent = c; tr.appendChild(td); });
+      t.appendChild(tr);
+    });
+    if (!first.length) { t.innerHTML = "<tr><td>No text found. Try a clearer picture or another language.</td></tr>"; }
+    $("txt").value = allText;
+    $("result").classList.remove("hidden");
+    $("result").scrollIntoView({ behavior: "smooth" });
+  }
+
+  function download(blob, name) {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  }
+
+  $("dlx").addEventListener("click", function () {
+    var wb = XLSX.utils.book_new(), used = {};
+    pages.forEach(function (p) {
+      var n = p.name.replace(/[\[\]:*?\/\\]/g, "").slice(0, 31) || "Sheet", k = n, i = 2;
+      while (used[k]) { k = n.slice(0, 28) + "_" + i++; }
+      used[k] = 1;
+      var ws = XLSX.utils.aoa_to_sheet(p.table.length ? p.table : [[""]]);
+      var cols = [];
+      p.table.forEach(function (r) { r.forEach(function (c, i) {
+        cols[i] = Math.min(60, Math.max(cols[i] || 8, String(c).length + 2));
+      }); });
+      ws["!cols"] = cols.map(function (w) { return { wch: w }; });
+      XLSX.utils.book_append_sheet(wb, ws, k);
+    });
+    var out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    download(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "ocr-result.xlsx");
+  });
+
+  $("dlc").addEventListener("click", function () {
+    var csv = pages.map(function (p) {
+      return XLSX.utils.sheet_to_csv(XLSX.utils.aoa_to_sheet(p.table.length ? p.table : [[""]]));
+    }).join("\n");
+    download(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }), "ocr-result.csv");
+  });
+
+  $("dlt").addEventListener("click", function () {
+    download(new Blob([allText], { type: "text/plain;charset=utf-8" }), "ocr-result.txt");
+  });
+})();
+</script>
+</body>
+</html>
